@@ -20,10 +20,21 @@ LOG="$HOME/Library/Logs/$LABEL.log"
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 DOMAIN="gui/$(id -u)"
 TEMPLATE="$REPO/tools/launchd/$LABEL.plist"
+PLUGIN="$REPO/tools/swiftbar/botcrossing.30s.sh"
+# The menu bar icon is optional and most machines will not have SwiftBar at all. `defaults read`
+# on a domain that does not exist exits 1 and writes to stderr, and this script runs under
+# `set -eu` — so the failure is swallowed here rather than killing an install that has already
+# done its real work. An empty PLUGIN_DIR simply means there is nothing to link.
+PLUGIN_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true)
+PLUGIN_LINK=${PLUGIN_DIR:+$PLUGIN_DIR/botcrossing.30s.sh}
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
   rm -f "$PLIST"
+  if [ -n "$PLUGIN_LINK" ] && [ -L "$PLUGIN_LINK" ]; then
+    rm -f "$PLUGIN_LINK"
+    echo "removed $PLUGIN_LINK — the menu bar icon goes with the agent"
+  fi
   echo "removed $PLIST — the log and $ENV_FILE are left alone"
   exit 0
 fi
@@ -71,6 +82,17 @@ sed -e "s|__REPO__|$REPO|g" -e "s|__NODE__|$NODE|g" -e "s|__HOME__|$HOME|g" "$TE
 # the failure when nothing is loaded is the normal first-install case.
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 launchctl bootstrap "$DOMAIN" "$PLIST"
+
+# The menu bar icon, if there is anywhere to put it. No SwiftBar, or a SwiftBar that has never
+# been told where its plugins live, means no link and no line about one — the agent is installed
+# either way and an optional nicety is not worth a warning.
+if [ -n "$PLUGIN_LINK" ] && [ -d "$PLUGIN_DIR" ]; then
+  echo "==> linking $PLUGIN_LINK"
+  ln -sfn "$PLUGIN" "$PLUGIN_LINK"
+  # Ask SwiftBar to pick it up now instead of at its next scan. This fails when SwiftBar is
+  # installed but not running, which is not a reason to fail an install.
+  open -g 'swiftbar://refreshplugin?name=botcrossing' 2>/dev/null || true
+fi
 
 # Give it long enough to have scanned and pushed once before we show anything.
 sleep 5

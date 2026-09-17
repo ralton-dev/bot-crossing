@@ -11,6 +11,11 @@ recordings
 assets-src
 design
 
+# The laptop half: a launchd plist and a menu bar plugin, both macOS-only and both meaningless
+# to a Linux container. `tools/` itself has to come in for the asset packers.
+tools/swiftbar
+tools/launchd
+
 .git
 
 # Sound samples are licensed for use in a work, not for redistribution. The README explains

@@ -929,6 +929,19 @@ front of you. Logs go to `~/Library/Logs/com.botcrossing.sync.log` — one line 
 rotated, so about 200 KB a day at the default interval. `sh tools/sync-install.sh --uninstall`
 stops it and removes the plist, leaving the env file and the log alone.
 
+#### Menu bar
+
+macOS shows nothing at all for a launchd agent, so `tools/swiftbar/botcrossing.30s.sh` puts one
+moon in the menu bar: green while pushes are landing, amber when the log has gone quiet for two
+minutes or no push has landed for six, red on a failed push or a crash, grey when the agent is
+not loaded or this machine was never configured. The dropdown has the thread counts, the last
+log line verbatim, and buttons to open the wall, restart the agent and tail the log. It needs
+[SwiftBar](https://swiftbar.app) (`brew install --cask swiftbar`), which asks for a plugin
+folder on first launch — point it anywhere, then re-run `sh tools/sync-install.sh`, which
+symlinks the plugin into it, or make the symlink by hand. The plugin reads two things and writes
+nothing: `launchctl print` and the log. It never sources the env file, so the token is not in
+its environment; it greps the wall's URL and the machine name out of it and nothing else.
+
 #### Kiosk
 
 Add `?kiosk=1` to the URL for a wall display. The panel, the rail and the thread card are gone,
@@ -962,7 +975,8 @@ src/
   audio/       the ambience engine, the sound registry, the synths
   game/        threads → colony, and the API client
   ui/          the HUD
-tools/         asset packers — raw packs in, the four glbs the app loads out
+tools/         asset packers, the visual-check harnesses, and the laptop side:
+               sync-install.sh, launchd/, swiftbar/
 public/assets/ spacebase.glb, crew.glb, forest.glb, nature.glb
 public/audio/  optional sound samples + manifest.json (gitignored; see its README)
 ```
