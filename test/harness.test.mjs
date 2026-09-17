@@ -43,14 +43,14 @@ test('a session id that merely stringifies to a UUID is refused', async () => {
   const uuid = '2df3987c-02d3-405e-b8f5-da30e3835213'
   assert.equal((await claudeCode.openThread({ cliSessionId: [uuid] })).ok, false)
   assert.equal((await claudeCode.openThread({ desktopSessionId: { toString: () => `local_${uuid}` } })).ok, false)
-  assert.equal(codex.openThread({ sessionId: [uuid] }).ok, false)
-  assert.equal(codex.openThread({}).ok, false)
-  assert.equal(codex.openThread(null).ok, false)
+  assert.equal((await codex.openThread({ sessionId: [uuid] })).ok, false)
+  assert.equal((await codex.openThread({})).ok, false)
+  assert.equal((await codex.openThread(null)).ok, false)
 })
 
-test('codex opens through the registered scheme and prefixes its ids', () => {
+test('codex opens through the registered scheme and prefixes its ids', async () => {
   const id = '019cc762-45a2-7112-89cd-cd345c17e834'
-  const opened = codex.openThread({ sessionId: id })
+  const opened = await codex.openThread({ sessionId: id })
   assert.equal(opened.ok, true)
   assert.equal(schemeOf(opened.url), 'codex')
   assert.equal(opened.url, `codex://threads/${id}`)

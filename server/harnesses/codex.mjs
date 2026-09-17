@@ -22,7 +22,7 @@
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { exists, jsonLines, listDirs, listFiles, num, readHead, readTail } from '../lib/fsutil.mjs'
+import { exists, findExecutable, jsonLines, listDirs, listFiles, num, readHead, readTail } from '../lib/fsutil.mjs'
 
 const HOME = os.homedir()
 const CODEX_HOME = process.env.CODEX_HOME || path.join(HOME, '.codex')
@@ -299,23 +299,46 @@ async function scanThreads() {
       sizeBytes: entry?.size || 0,
       source: row?.source === 'vscode' ? 'vscode' : 'cli',
       canOpen: true,
-      ref: { sessionId: id },
+      // The folder rides along for the CLI fallback: `codex resume` belongs in the thread's own cwd.
+      ref: { sessionId: id, cwd },
     })
   }
   return out
 }
 
-/** `codex://` is registered by the Codex desktop app; the OS opener does the rest. */
-function openThread(ref) {
+/**
+ * Where the `codex` CLI is, for a machine that has it but no desktop app to answer the deep
+ * link. PATH first, then the places its installers put it. Only Linux and macOS ask: on Windows
+ * the deep link is always answered, so the walk is wasted.
+ */
+const CLI_DIRS = [path.join(HOME, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+const OFFERS_CLI = process.platform === 'linux' || process.platform === 'darwin'
+const cliBinary = () => findExecutable('codex', CLI_DIRS)
+
+/**
+ * `codex://` is registered by the Codex desktop app; the OS opener does the rest. Alongside it,
+ * `codex resume <id>` for a machine with only the CLI — the server decides which one runs.
+ */
+async function openThread(ref) {
   const id = ref?.sessionId
   if (typeof id !== 'string' || !UUID.test(id)) {
     return { ok: false, error: 'No openable Codex session id on that thread' }
   }
-  return { ok: true, url: `codex://threads/${id}` }
+  let command
+  if (OFFERS_CLI) {
+    const bin = await cliBinary()
+    if (bin) command = { argv: [bin, 'resume', id], cwd: typeof ref.cwd === 'string' ? ref.cwd : '' }
+  }
+  return { ok: true, url: `codex://threads/${id}`, command }
 }
 
-function newSession(dir) {
-  return { ok: true, url: `codex://threads/new?${new URLSearchParams({ path: dir })}` }
+async function newSession(dir) {
+  let command
+  if (OFFERS_CLI) {
+    const bin = await cliBinary()
+    if (bin) command = { argv: [bin], cwd: dir }
+  }
+  return { ok: true, url: `codex://threads/new?${new URLSearchParams({ path: dir })}`, command }
 }
 
 /** Claim the machine if either store is there — a CLI-only install has no database. */
