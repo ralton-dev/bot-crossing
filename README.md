@@ -871,7 +871,75 @@ it does locally.
 
 #### The laptop side
 
-_(coming with the sync agent)_
+The other half is `server/sync.mjs`: one process on the machine that owns the threads. It scans
+exactly as the local server does, marks the threads your own colony has archived, redacts, and
+POSTs the result every 30 seconds. It listens on nothing and answers nothing — there is no port
+to find and no request that can make it do anything.
+
+It reads four variables:
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `BOT_CROSSING_SYNC_URL` | — | required, e.g. `https://colony.example/api/sync` |
+| `BOT_CROSSING_SYNC_TOKEN` | — | required, the display's `BOT_CROSSING_SYNC_TOKEN` |
+| `BOT_CROSSING_SYNC_INTERVAL_S` | `30` | how often to push |
+| `BOT_CROSSING_MACHINE` | this machine's hostname | the snapshot key, lowercased and squeezed into `/^[a-z0-9][a-z0-9-]{0,62}$/` |
+
+Try it in the foreground first:
+
+```bash
+BOT_CROSSING_SYNC_URL=https://colony.example/api/sync \
+BOT_CROSSING_SYNC_TOKEN=... \
+npm run sync
+```
+
+```
+21:04:12 pushing as "workshop-laptop" every 30s to https://colony.example/api/sync
+21:04:13 pushed 526 threads (2 running, 3 waiting) in 812ms
+21:04:43 unchanged — 526 threads (2 running, 3 waiting), last push 30s ago
+```
+
+Nothing it does is fatal. A wall that is down, asleep or behind a captive portal produces one
+`push failed: …` line per attempt and nothing else; after five in a row it drops to one attempt
+every five minutes and says so, and the first success puts it back. A colony that has not
+changed is not re-sent, except every five minutes regardless — the display's staleness clock
+counts from when a push *landed*, so a quiet laptop still has to say it is there.
+
+`node server/sync.mjs --once` does a single scan and push and exits `0` only if the display took
+it. That is the thing to run when a token has been rotated.
+
+**To keep it running**, on macOS:
+
+```bash
+sh tools/sync-install.sh
+```
+
+It refuses unless `~/.config/bot-crossing/sync.env` exists at mode `600`:
+
+```sh
+BOT_CROSSING_SYNC_URL=https://colony.example/api/sync
+BOT_CROSSING_SYNC_TOKEN=<the display's token>
+```
+
+The token lives only in that file. The installed launchd plist sources it at launch and has no
+`EnvironmentVariables` key, so the secret is never in
+`~/Library/LaunchAgents/com.botcrossing.sync.plist` and never in this repo. The install does one
+push in the foreground before installing anything, so a wrong URL or a stale token fails in
+front of you. Logs go to `~/Library/Logs/com.botcrossing.sync.log` — one line per tick, not
+rotated, so about 200 KB a day at the default interval. `sh tools/sync-install.sh --uninstall`
+stops it and removes the plist, leaving the env file and the log alone.
+
+#### Kiosk
+
+Add `?kiosk=1` to the URL for a wall display. The panel, the rail and the thread card are gone,
+the camera sweeps around the colony on its own, and pointer and keyboard input are ignored —
+clicking an astronaut selects nothing and no key does anything, so there is no state a passer-by
+can leave the screen in. The help sheet never opens. A kiosk applies its own settings profile
+(no auto-framing, no follow, dormant repos folded away, name plates on, no frame counter)
+*without* saving it, so the same browser opened normally later still has its owner's settings.
+It does not depend on the server's mode: a local `npm run dev` can be put in kiosk mode to see
+what the wall will look like. If the server is reporting anything — a stale snapshot, say — that
+one line shows bottom-left, and it is the only chrome a kiosk has.
 
 ## Layout
 

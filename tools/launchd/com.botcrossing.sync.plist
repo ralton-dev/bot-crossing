@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. `tools/sync-install.sh` fills in the three `__…__` placeholders below — the repo,
+  the node binary and $HOME — and writes the result to
+  ~/Library/LaunchAgents/com.botcrossing.sync.plist. Do not install this file as it is.
+
+  There is deliberately no EnvironmentVariables key. The push token would otherwise sit in a
+  world-readable plist in a directory every backup, every sync client and every "why is this
+  running?" screenshot picks up. It lives in ~/.config/bot-crossing/sync.env at mode 600 and is
+  sourced by the shell below, so it exists only in the agent's own process environment.
+
+  All three placeholders are absolute paths because launchd expands nothing: `man 5
+  launchd.plist` documents no tilde or environment expansion for any path-valued key, so a
+  literal ~/Library/Logs/… would create a directory called "~" next to the repo. The same goes
+  for node, which lives under nvm and is not on launchd's PATH at all.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.botcrossing.sync</string>
+
+  <!--
+    /bin/sh rather than node directly, for one reason: `set -a; . sync.env` is how the token
+    reaches the process without being written down anywhere launchd can see. `exec` so the node
+    process *is* the job — otherwise KeepAlive watches a shell and a crashed agent looks alive.
+  -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; . "$HOME/.config/bot-crossing/sync.env"; set +a; exec "__NODE__" server/sync.mjs</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- The agent is meant to be running whenever the laptop is. It exits 0 on SIGTERM and
+       launchd restarts it; that is the intent, and a reboot needs no intervention. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- A misconfigured env file makes the agent exit immediately. Without a throttle launchd
+       would restart it as fast as it can and fill the log with the same line thousands of
+       times; 30s matches the push interval, so a broken agent costs one line per push. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/com.botcrossing.sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/com.botcrossing.sync.log</string>
+</dict>
+</plist>

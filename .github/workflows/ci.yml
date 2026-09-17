@@ -128,9 +128,16 @@ jobs:
           echo "GET /readyz:  $ready (want 200)"
           test "$health" = "200"
           test "$ready" = "200"
-          # TODO: once display mode lands in server/api.mjs, assert `POST /api/open` answers 403
-          # here — a display must not be able to spawn anything, and this is the leg that would
-          # catch an image built from a tree where that regressed.
+          # A display must not be able to spawn anything, and this is the leg that catches an
+          # image built from a tree where that regressed. The Origin is a local one on purpose:
+          # it is the request the Host/Origin gate would have *allowed*, so a 403 here can only
+          # be display mode refusing, not the gate refusing for its own reasons.
+          open=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST --header 'Origin: http://localhost:8080' \
+            --header 'Content-Type: application/json' --data '{}' \
+            http://127.0.0.1:8080/api/open)
+          echo "POST /api/open: $open (want 403)"
+          test "$open" = "403"
 
       - name: Container logs
         if: always()
