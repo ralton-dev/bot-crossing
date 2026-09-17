@@ -47,11 +47,18 @@ binary the user already has on `PATH` — never a path we guessed inside an app.
 `openThread(ref)` and `newSession(dir)` return `{ ok, url, command }`, either may be async, and
 the server decides what to do with it:
 
-- **macOS and Windows** — the URL goes to the OS opener. A scheme the harness's app registers is
-  always answered there, so nothing is probed.
+- **Windows** — the URL goes to the OS opener. A scheme the harness's app registers is always
+  answered there, so nothing is probed.
 - **Linux** — the scheme is checked with `xdg-mime` first, because `xdg-open` on a scheme nobody
   claims exits quietly and used to reach the page as "Opened". Failing that, `command` runs in a
   terminal. Failing that, the page is told the truth.
+- **macOS** — the same shape as Linux, and for the same reason. This used to sit with Windows on
+  the premise that a harness's scheme is always answered on a Mac; it is not. The scheme is
+  registered by the *desktop app*, and a machine with only the CLI installed has nothing
+  claiming `claude://` — the CLI registers `claude-cli://` for its own login callback and no
+  more — so `open` fails with `kLSApplicationNotFoundErr`, which was fired detached and
+  reached the page as "Opened". Now `open`'s exit code is the probe, and a refusal runs
+  `command` in Terminal.app, through `osascript` — nothing inside the app's bundle is touched.
 
 `command` is `{ argv, cwd }` with an absolute `argv[0]`. No harness knowledge reaches
 `launch()` — that seam is the reason `server/harnesses/` is swappable at all.

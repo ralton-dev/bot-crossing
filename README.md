@@ -29,9 +29,10 @@ second process. For a built version, `npm start` (build + serve) or `npm run ser
 
 **macOS, Linux and Windows.** Opening a thread, revealing a folder and starting a new session
 all go through a `harness://` deep link handed to the OS opener — `open(1)` on macOS,
-`xdg-open` on Linux, ShellExecute on Windows. The scanning half was portable already. On Linux,
-where a desktop app often is not installed, the scheme is checked first and a terminal running
-the harness's own CLI opens instead when nothing answers it.
+`xdg-open` on Linux, ShellExecute on Windows. The scanning half was portable already. On Linux
+and macOS, where a desktop app often is not installed, the scheme is checked first and a
+terminal running the harness's own CLI opens instead when nothing answers it — Terminal.app on
+a Mac.
 
 ## Which harnesses work
 

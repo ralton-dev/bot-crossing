@@ -3,7 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { openInTerminal, schemeHasHandler, schemeOf } from './lib/xdg.mjs'
+import { openInTerminal as openInLinuxTerminal, schemeHasHandler, schemeOf } from './lib/xdg.mjs'
+import { openInTerminal as openInMacTerminal, openUrl as openMacUrl } from './lib/macos.mjs'
 import {
   defaultHarness,
   harnessStatus,
@@ -178,12 +179,13 @@ async function resolveFolder(folder) {
  * Show a harness's answer to "open this" — `{ ok, url, command }` — and say truthfully whether
  * anything happened.
  *
- * macOS and Windows hand the URL to the opener exactly as before: a scheme the harness's app
- * registers is always answered there, so nothing is probed. Linux is the platform where the URL
- * may have nowhere to go — the desktop app is optional and often absent, and `xdg-open` on a
- * scheme nobody claims exits quietly, which used to reach the page as "Opened". So there the
- * scheme is checked first; failing that, the harness's own CLI runs in a terminal, from the
- * `command` the adapter offered alongside the URL; failing that, the page is told so.
+ * Windows hands the URL to the opener as before: a scheme the harness's app registers is always
+ * answered there, so nothing is probed. On Linux and macOS the URL may have nowhere to go — the
+ * desktop app is optional and often absent, and an opener given a scheme nobody claims either
+ * exits quietly (`xdg-open`) or was fired detached with its exit code ignored (`open`), both of
+ * which used to reach the page as "Opened". So there the scheme is checked first; failing that,
+ * the harness's own CLI runs in a terminal, from the `command` the adapter offered alongside the
+ * URL; failing that, the page is told so.
  *
  * `command.cwd` came from the page — inside `ref`, or as the folder itself — so it gets the same
  * check as any other folder the page names. There is no fallback directory on purpose:
@@ -194,16 +196,22 @@ async function present(result) {
   // Only the reason reaches the page: a failure may still carry the adapter's command.
   if (!result || !result.ok) return { ok: false, error: result?.error || 'Nothing to open' }
 
-  if (process.platform !== 'linux') {
+  if (process.platform === 'win32') {
     if (!result.url) return { ok: false, error: 'That harness has no deep link to open on this platform' }
     launch(result.url)
     // A note is the adapter saying it opened *something* — the repo rather than the thread.
     return { ok: true, url: result.url, note: result.note }
   }
 
-  if (result.url && (await schemeHasHandler(result.url))) {
-    launch(result.url)
-    return { ok: true, url: result.url }
+  if (result.url) {
+    if (process.platform === 'darwin') {
+      // `open` says at once whether anything claims the scheme, so it is the probe as well.
+      const opened = await openMacUrl(result.url)
+      if (opened.ok) return { ok: true, url: result.url, note: result.note }
+    } else if (await schemeHasHandler(result.url)) {
+      launch(result.url)
+      return { ok: true, url: result.url }
+    }
   }
   if (result.command) {
     if (!result.command.cwd) return { ok: false, error: 'That thread has no folder on record to resume in' }
@@ -213,6 +221,7 @@ async function present(result) {
     // terminal gets the blame; say what is actually wrong instead.
     const enterable = await fsp.access(cwd, fsp.constants.X_OK).then(() => true, () => false)
     if (!enterable) return { ok: false, error: 'The folder that thread ran in cannot be entered' }
+    const openInTerminal = process.platform === 'darwin' ? openInMacTerminal : openInLinuxTerminal
     return openInTerminal(result.command.argv, cwd)
   }
   const scheme = schemeOf(result.url)
