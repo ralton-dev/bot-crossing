@@ -89,9 +89,15 @@ launchctl bootstrap "$DOMAIN" "$PLIST"
 if [ -n "$PLUGIN_LINK" ] && [ -d "$PLUGIN_DIR" ]; then
   echo "==> linking $PLUGIN_LINK"
   ln -sfn "$PLUGIN" "$PLUGIN_LINK"
-  # Ask SwiftBar to pick it up now instead of at its next scan. This fails when SwiftBar is
-  # installed but not running, which is not a reason to fail an install.
-  open -g 'swiftbar://refreshplugin?name=botcrossing' 2>/dev/null || true
+  # SwiftBar drops a plugin the moment its file disappears (an --uninstall does that) and does
+  # not take it back when the link reappears — neither the folder watcher nor a
+  # swiftbar://refreshplugin request re-adds it; only a relaunch rescans the folder. So if it is
+  # running, bounce it. Not running means it will scan the folder when it next starts anyway.
+  if pgrep -x SwiftBar >/dev/null 2>&1; then
+    osascript -e 'quit app "SwiftBar"' >/dev/null 2>&1 || true
+    sleep 1
+    open -a SwiftBar 2>/dev/null || true
+  fi
 fi
 
 # Give it long enough to have scanned and pushed once before we show anything.
