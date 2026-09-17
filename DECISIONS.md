@@ -58,7 +58,9 @@ the server decides what to do with it:
   claiming `claude://` — the CLI registers `claude-cli://` for its own login callback and no
   more — so `open` fails with `kLSApplicationNotFoundErr`, which was fired detached and
   reached the page as "Opened". Now `open`'s exit code is the probe, and a refusal runs
-  `command` in Terminal.app, through `osascript` — nothing inside the app's bundle is touched.
+  `command` in a terminal: Terminal.app unless `BOT_CROSSING_TERMINAL` names another. Terminal.app
+  and iTerm2 are driven through `osascript`; kitty, alacritty, ghostty and wezterm through their
+  own flags, found on PATH only — never the binary inside their bundle.
 
 `command` is `{ argv, cwd }` with an absolute `argv[0]`. No harness knowledge reaches
 `launch()` — that seam is the reason `server/harnesses/` is swappable at all.

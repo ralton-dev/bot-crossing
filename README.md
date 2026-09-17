@@ -31,8 +31,9 @@ second process. For a built version, `npm start` (build + serve) or `npm run ser
 all go through a `harness://` deep link handed to the OS opener — `open(1)` on macOS,
 `xdg-open` on Linux, ShellExecute on Windows. The scanning half was portable already. On Linux
 and macOS, where a desktop app often is not installed, the scheme is checked first and a
-terminal running the harness's own CLI opens instead when nothing answers it — Terminal.app on
-a Mac.
+terminal running the harness's own CLI opens instead when nothing answers it. On a Mac that is
+Terminal.app unless `BOT_CROSSING_TERMINAL` names another: `iterm2`, `kitty`, `alacritty`,
+`ghostty` or `wezterm`. On Linux `$TERMINAL` is honoured first, then the desktop's own.
 
 ## Which harnesses work
 
@@ -43,7 +44,7 @@ somebody writing that adapter.
 | Harness | Status |
 | --- | --- |
 | **[Claude Code](https://claude.com/claude-code)** (Anthropic) | ✅ **Supported** — desktop app and CLI, including worktrees and live-process detection |
-| **[Codex](https://developers.openai.com/codex/cli)** (OpenAI) | ✅ **Supported** — desktop, VS Code and CLI sessions, opened through `codex://` |
+| **[Codex](https://developers.openai.com/codex/cli)** (OpenAI) | ✅ **Supported** — desktop, VS Code and CLI sessions, opened through `codex://`, or `codex resume` in a terminal where no app answers it |
 | [OpenCode](https://opencode.ai) | ⬜ Not yet |
 | [Antigravity CLI](https://antigravity.google) (Google) | ⬜ Not yet — the successor to Gemini CLI, which Google stopped serving individual accounts on 18 June 2026 |
 | **[Cursor](https://cursor.com)** (Anysphere) | ✅ **Supported** — agent transcripts; the composer/sidebar threads are not read yet |
