@@ -265,14 +265,14 @@ export class Settings {
     return () => this.listeners.delete(fn)
   }
 
-  _emit(keys) {
+  _emit(keys, persist = true) {
     const changed = new Set(keys)
     const scope = {
       world: keys.some((k) => WORLD_KEYS.has(k)),
       render: keys.some((k) => RENDER_KEYS.has(k)),
     }
     for (const fn of this.listeners) fn(changed, scope, this.values)
-    this._scheduleSave()
+    if (persist) this._scheduleSave()
   }
 
   _scheduleSave() {
@@ -290,8 +290,13 @@ export class Settings {
    * Adopt a whole saved set at once — the colony file's copy, when this browser has none of
    * its own. One emit rather than one per key, so the renderer is reconfigured once instead
    * of thirty times on the way in.
+   *
+   * `persist: false` applies the values to the running page but leaves `localStorage` alone.
+   * That is for profiles the *page* imposes rather than the person — kiosk mode — where
+   * writing them down would mean the same browser opened normally later comes up wearing a
+   * wall display's settings and calling them its owner's.
    */
-  applyAll(values) {
+  applyAll(values, { persist = true } = {}) {
     const incoming = { ...values }
     // The colony file may predate this setting too (for example, in a fresh browser).
     if (PRESETS[incoming.preset] && !Object.hasOwn(incoming, 'ambientOcclusion')) {
@@ -303,7 +308,7 @@ export class Settings {
       this.values[key] = value
       changed.push(key)
     }
-    if (changed.length) this._emit(changed)
+    if (changed.length) this._emit(changed, persist)
     return changed.length
   }
 

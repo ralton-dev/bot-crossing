@@ -63,6 +63,13 @@ export class CameraRig {
 
     this.idleFor = 0
     this.interacting = false
+    /**
+     * Whether the rig listens to a hand at all. Off on a wall display: the sweep, the follow
+     * and the rest-to-isometric easing all keep running, and every pointer and wheel event is
+     * dropped where it arrives. The listeners stay bound rather than being skipped in `_bind`
+     * — the flag is a live one, `dispose()` stays the mirror of `_bind()`, and suppressing the
+     * context menu is a property of the canvas rather than of input being wanted.
+     */
     this.enabled = true
     /** Google Earth's auto-rotate: a slow continuous sweep around whatever is centred. */
     this.orbiting = false
@@ -152,7 +159,7 @@ export class CameraRig {
   }
 
   _pointerMove(e) {
-    if (!this._mode) return
+    if (!this.enabled || !this._mode) return
     const p = this._pointers.get(e.pointerId)
     if (p) {
       p.x = e.clientX
@@ -216,6 +223,7 @@ export class CameraRig {
   }
 
   _pointerUp(e) {
+    if (!this.enabled) return
     this._pointers.delete(e.pointerId)
     if (this._pointers.size === 0) {
       this._mode = null
@@ -394,6 +402,17 @@ export class CameraRig {
   // ── frame ───────────────────────────────────────────────────────────────────────────
 
   update(dt) {
+    // Disabled mid-gesture — or disabled from the start — leaves nothing half-held: the drag
+    // anchor and the easing dolly are both input state, and a frame that still believed in
+    // them would keep panning the wall long after the hand went away.
+    if (!this.enabled && (this._mode || this.interacting || this._zoom)) {
+      this._pointers.clear()
+      this._mode = null
+      this.interacting = false
+      this.suppressed = false
+      this._hasAnchor = false
+      this._zoom = null
+    }
     this._trackFollow()
     if (!this.interacting) this.idleFor += dt
 

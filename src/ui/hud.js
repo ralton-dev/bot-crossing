@@ -61,6 +61,7 @@ export class Hud {
     this.settings = settings
     this.actions = actions
     this.visible = true
+    this.displayMode = false
     this._last = {}
     this.hiddenOpen = false
 
@@ -878,6 +879,41 @@ export class Hud {
     this.$('#btn-orbit').setAttribute('aria-pressed', String(Boolean(on)))
   }
 
+  /**
+   * Display mode: this page is a picture of somebody else's machine, so the controls that
+   * would reach out and touch it are taken off the page rather than greyed out. Disabled is
+   * a promise about a button; `display: none` is a promise about the page. Everything that
+   * only writes to this colony's own file — archive, viewed, hide-from-colony, settings —
+   * stays exactly where it was.
+   *
+   * Called on every poll, so it does nothing when the answer has not changed.
+   */
+  setDisplayMode(on) {
+    const wanted = Boolean(on)
+    if (this.displayMode === wanted) return wanted
+    this.displayMode = wanted
+    this.el.classList.toggle('display', wanted)
+    this._syncLayout()
+    return wanted
+  }
+
+  /** The wall: no panels, no cards, and nothing under the pointer that could be clicked. */
+  setKiosk(on) {
+    this.el.classList.toggle('kiosk', Boolean(on))
+  }
+
+  /**
+   * The one line of chrome a wall display is allowed: whatever the server is warning about,
+   * which in practice is "the laptop stopped pushing". Joined rather than listed because it
+   * has to read as a footnote from across a room, not as a log.
+   */
+  setWarnings(warnings) {
+    const text = (warnings || []).join(' · ')
+    const el = this.$('.stale')
+    if (el.textContent !== text) el.textContent = text
+    el.classList.toggle('on', Boolean(text))
+  }
+
   /** Whether the layout is the phone one: the sheet, the docked card, the top rail. */
   isPhone() {
     return window.matchMedia('(max-width: 600px)').matches
@@ -1133,6 +1169,7 @@ const TEMPLATE = `
 <div class="toasts"></div>
 <div class="fps panel"></div>
 <div class="hint-pill panel"></div>
+<div class="stale"></div>
 
 <div class="help">
   <div class="sheet panel">

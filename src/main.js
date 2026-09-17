@@ -22,6 +22,7 @@ import {
   revealFolder,
 } from './game/api.js'
 import { hideProject, hiddenCatalog, unhideProject } from './game/hidden-projects.js'
+import { KIOSK_SETTINGS, parseKiosk } from './game/kiosk.js'
 
 /**
  * Boot and the outer game loop.
@@ -34,6 +35,17 @@ import { hideProject, hiddenCatalog, unhideProject } from './game/hidden-project
 
 const POLL_MS = 15000
 const app = document.getElementById('app')
+
+/**
+ * Two ways this page stops being something you can act through.
+ *
+ * `kiosk` is chosen by whoever opened the URL and is known before anything is built — a wall
+ * display, no hands, no chrome. `displayMode` is told to us by the server on every poll: the
+ * threads came off a machine that is not this one, so the controls that would reach back to
+ * it have nothing to reach. They are independent; the wall happens to be both.
+ */
+const kiosk = parseKiosk(location.search)
+let displayMode = false
 
 app.insertAdjacentHTML(
   'beforeend',
@@ -50,6 +62,10 @@ const settings = new Settings()
 // that out by stuttering first.
 const phoneLike = window.matchMedia('(max-width: 600px)').matches || (window.matchMedia('(pointer: coarse)').matches && window.innerWidth < 900)
 if (!hasStoredSettings()) settings.applyPreset(phoneLike ? 'low' : DEFAULT_PRESET)
+// The wall's profile, applied before anything reads a setting and *not* written down: the
+// engine, the rig and the colony are all built from these values a few lines below, and the
+// browser behind the screen must not come away thinking its owner chose them.
+if (kiosk) settings.applyAll(KIOSK_SETTINGS, { persist: false })
 
 // Before the first material compiles: the bend is patched into three's own shader chunks.
 installWorldCurve()
@@ -74,6 +90,10 @@ const hoverGround = new THREE.Vector3()
 
 // ── actions the HUD can trigger ────────────────────────────────────────────────────────
 
+// Three of these reach out and touch the machine the threads were scanned on — opening a
+// thread, starting one, showing its folder — and each refuses in display mode as well as
+// being taken off the page. The hidden button is the promise made to whoever is looking;
+// the guard is the promise made to everything else: a console, a stale card, a held key.
 const actions = {
   viewportChanged: ({ width, height, right, bottom }) => {
     rig.setViewportInsets(width, height, { right, bottom })
@@ -160,6 +180,7 @@ const actions = {
    * its workspace — nothing here is resumed, and nothing is written to disk.
    */
   newConversation: async () => {
+    if (displayMode) return
     const name = selectedProject
     const folder = name && pathForProject(name)
     if (!folder) {
@@ -178,6 +199,7 @@ const actions = {
   },
 
   revealProject: async () => {
+    if (displayMode) return
     const folder = selectedProject && pathForProject(selectedProject)
     if (!folder) return
     try {
@@ -243,6 +265,7 @@ const actions = {
   },
 
   openThread: async () => {
+    if (displayMode) return
     const thread = threads.find((t) => t.id === selectedId)
     if (!thread) return
     try {
@@ -301,6 +324,16 @@ ambience.setPlanet(colony.planet)
 colony.onSound = (name, x, y, z) => ambience.play(name, { x, y, z, kind: colony.fauna.flock?.kind })
 
 const hud = new Hud(app, settings, actions)
+
+// The wall, set up once. The rig keeps sweeping, following and easing — it simply stops
+// listening to a hand that is not there — and the HUD is dismissed as if H had been pressed,
+// plus the thread card, which that gesture deliberately spares and a wall has no use for.
+if (kiosk) {
+  rig.enabled = false
+  rig.setOrbit(true)
+  hud.setKiosk(true)
+  hud.toggleUi(false)
+}
 
 // ── selection ─────────────────────────────────────────────────────────────────────────
 
@@ -468,7 +501,11 @@ function ndc(e) {
   }
 }
 
+// Hover, selection and the zone sidebar are decided here rather than in the rig, so each of
+// these three has to refuse a wall display on its own — a camera that has stopped listening
+// would still let a passing cursor pick an astronaut and put a card on the screen.
 engine.canvas.addEventListener('pointermove', (e) => {
+  if (kiosk) return
   // Mid-drag the cursor is the grab hand and nothing else: running a pick every move event
   // while the world is being dragged would flicker the hover ring across the whole colony.
   if (rig.interacting) {
@@ -504,7 +541,7 @@ function plotUnder(e, p) {
 // on top of somebody. Selection is decided on release instead, where `wasClick` already
 // distinguishes a click from a drag.
 engine.canvas.addEventListener('pointerup', (e) => {
-  if (e.button !== 0 || !rig.wasClick) return
+  if (kiosk || e.button !== 0 || !rig.wasClick) return
   const p = ndc(e)
   const agent = colony.pick(p.x, p.y, p.aspect)
   if (agent) {
@@ -521,6 +558,7 @@ engine.canvas.addEventListener('pointerup', (e) => {
 })
 
 engine.canvas.addEventListener('pointerleave', () => {
+  if (kiosk) return
   hoverId = null
   colony.astronauts.setHover(null)
   colony.setHoveredPlot(null)
@@ -529,6 +567,8 @@ engine.canvas.addEventListener('pointerleave', () => {
 // ── keyboard ──────────────────────────────────────────────────────────────────────────
 
 window.addEventListener('keydown', (e) => {
+  // A wall display has a keyboard only by accident.
+  if (kiosk) return
   // Never steal keys from a field the user is actually typing in.
   const t = e.target
   if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement) return
@@ -581,7 +621,7 @@ window.addEventListener('keydown', (e) => {
       hud.setOrbit(false)
       break
     case 'Enter':
-      if (selectedId) actions.openThread()
+      if (!displayMode && selectedId) actions.openThread()
       break
     case 'a':
     case 'A':
@@ -593,7 +633,7 @@ window.addEventListener('keydown', (e) => {
       break
     case 'c':
     case 'C':
-      if (selectedProject) actions.newConversation()
+      if (!displayMode && selectedProject) actions.newConversation()
       break
     case '?':
       hud.toggleHelp()
@@ -726,6 +766,13 @@ async function poll() {
   polling = true
   try {
     const res = await fetchThreads()
+    // What kind of colony this is, answered fresh every poll rather than once at boot: the
+    // page outlives the server it is talking to, and a reload is not something a wall does.
+    displayMode = res.mode === 'display'
+    hud.setDisplayMode(displayMode)
+    // `sources` names the machines this colony was assembled from and is deliberately left
+    // on the floor: a wall that names the laptop it watches is a wall with a machine on it.
+    hud.setWarnings(res.warnings || [])
     applyThreads(res.threads || [])
     hud.removeBoot()
   } catch (err) {
@@ -764,7 +811,9 @@ async function boot() {
         colony.restoreLayout(state.plots)
         // And the settings, but only for a browser that has none of its own — an explicit
         // choice made here always outranks the file.
-        if (!hasStoredSettings() && state.settings) settings.applyAll(state.settings)
+        // A kiosk has already been handed the profile it needs, and the file's copy is
+        // somebody's laptop preferences — it must not overwrite the wall's.
+        if (!kiosk && !hasStoredSettings() && state.settings) settings.applyAll(state.settings)
       })
       .catch(() => {
         /* first run, or the file is gone — an empty colony state is a valid one */
@@ -787,6 +836,9 @@ async function boot() {
     if (!document.hidden) poll()
   })
 
+  // Neither the help sheet nor the opening hint on a wall: both are addressed to a pair of
+  // hands, and the sheet in particular would sit there until somebody walked over to it.
+  if (kiosk) return
   if (!localStorage.getItem('botcrossing.seen-help')) {
     hud.toggleHelp(true)
     localStorage.setItem('botcrossing.seen-help', '1')

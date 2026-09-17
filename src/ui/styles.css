@@ -1328,6 +1328,60 @@ kbd {
   opacity: 1;
 }
 
+/* ── the stale line ──────────────────────────────────────────────────────────────── */
+
+/* Whatever the server is warning about, and on a wall that is the only chrome there is.
+   No panel and no outline: it is set in the name plates' own weight and family so it reads
+   as another label lying on the world rather than as a dialog somebody has to dismiss. */
+.stale {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  max-width: 44ch;
+  font-weight: 500;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+  display: none;
+}
+
+.stale.on {
+  display: block;
+}
+
+/* The frame counter owns the same corner, and on a laptop both can be on at once. */
+.hud:has(.fps.on) .stale {
+  bottom: 42px;
+}
+
+/* ── display mode and kiosk ──────────────────────────────────────────────────────── */
+
+/* Display mode: the threads on this page were scanned on a machine that is not this one, so
+   the four controls that would reach back to it are taken off the page rather than greyed
+   out. Everything that only writes to this colony's own file stays. */
+.hud.display #btn-open,
+.hud.display #btn-new-session,
+.hud.display #btn-reveal,
+.hud.display #btn-copy-path,
+/* Reveal and Copy path are the whole of that row — an empty pair would leave a gap. */
+.hud.display .project-actions .pair {
+  display: none;
+}
+
+/* Kiosk: `toggleUi(false)` has already faded the panels; the thread card is the one thing
+   that rule deliberately spares, and on a wall there is nobody to have selected anything, so
+   it goes too. The stale line is exempted back in — it is the display's only chrome. */
+.hud.kiosk > .thread-pop {
+  display: none;
+}
+
+.hud.kiosk.hidden > .stale {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
 /* ── boot ────────────────────────────────────────────────────────────────────────── */
 
 .boot {
