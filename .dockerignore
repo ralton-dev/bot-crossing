@@ -1,0 +1,19 @@
+# Installed and built inside the image, never copied in from the context.
+node_modules
+dist
+
+# Your colony, and local capture output. Neither belongs in an image.
+data
+recordings
+
+# Raw art packs (not in the repository anyway) and the character design sources. The packed
+# glbs under public/assets are what ships; see TRADEMARKS.md for why the sources do not.
+assets-src
+design
+
+.git
+
+# Sound samples are licensed for use in a work, not for redistribution. The README explains
+# how to drop your own in at runtime; the image ships none.
+public/audio/*
+!public/audio/README.md

@@ -1,0 +1,218 @@
+# Job names are contracts: if branch protection on `main` ever lists required status contexts
+# it will list `check` and the two `docker (linux/…)` legs. `docker-merge` is deliberately not
+# one — it only runs on push to `main`, so on a pull request it would never report and every PR
+# would sit blocked forever.
+name: CI
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+    branches: ['main']
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+  # Build each architecture on its NATIVE runner. Two of the three cluster nodes are arm64 and
+  # one is amd64, so a single-arch image would pin the app to one box. GitHub's `ubuntu-24.04-arm`
+  # is free for public repositories and a Vite build takes seconds, so this deliberately does not
+  # reach for the in-cluster self-hosted arm64 runner: no runner-group admission step, and no
+  # privileged container on a home LAN in the path of a pull request.
+  #
+  # Each leg pushes by digest only, with no tag; `docker-merge` assembles the manifest list.
+  #
+  # `needs: check` costs a minute of wall clock and buys the guarantee that `latest` is never
+  # moved by a tree whose tests fail — the tag is immutable once pushed, so there is no undoing.
+  docker:
+    name: docker
+    needs: check
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Prepare platform tag
+        id: prep
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "pair=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # On a pull request this builds without pushing. On main it pushes the single-platform
+      # image by digest — no tag yet — for the merge step to assemble.
+      - name: Build (push by digest on main)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/bot-crossing,push-by-digest=true,name-canonical=true,push=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          cache-from: type=gha,scope=${{ steps.prep.outputs.pair }}
+          cache-to: type=gha,scope=${{ steps.prep.outputs.pair }},mode=max
+
+      # A registry image is not a local image: the step above hands the layers to buildkit, not
+      # to the docker daemon, so there is nothing to `docker run`. This re-exports the same build
+      # through the docker exporter — every layer is a cache hit — and it is why the platform
+      # stays single here: `--load` takes exactly one.
+      - name: Load the image for the smoke test
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: bot-crossing:ci
+          cache-from: type=gha,scope=${{ steps.prep.outputs.pair }}
+
+      # Building proves it compiles; this proves it runs, on this architecture. It is also the
+      # only place the two probes are checked against a real volume: `/readyz` writes and removes
+      # a file under BOT_CROSSING_DATA, which is exactly the thing a build cannot catch.
+      - name: Boot it and probe it
+        run: |
+          set -euo pipefail
+          # The container runs as uid 1000 and the runner is a different uid, so the mount has to
+          # be writable by someone else — this is what `fsGroup: 1000` does in the cluster.
+          data="$(mktemp -d)"
+          chmod 0777 "$data"
+          docker run --detach --name bot-crossing-ci --publish 8080:8080 \
+            --env APP_VERSION="sha-${GITHUB_SHA}" \
+            --env BOT_CROSSING_SYNC_TOKEN=x \
+            --env BOT_CROSSING_PUBLIC_HOST=x \
+            --volume "$data":/data bot-crossing:ci
+          # `/readyz` is the wait, here and in the Dockerfile HEALTHCHECK and in the cluster.
+          for _ in $(seq 1 60); do
+            if curl --silent --fail --output /dev/null http://127.0.0.1:8080/readyz; then break; fi
+            sleep 1
+          done
+          echo "GET /healthz: $(curl --silent http://127.0.0.1:8080/healthz)"
+          health=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/healthz)
+          ready=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/readyz)
+          echo "GET /healthz: $health (want 200)"
+          echo "GET /readyz:  $ready (want 200)"
+          test "$health" = "200"
+          test "$ready" = "200"
+          # TODO: once display mode lands in server/api.mjs, assert `POST /api/open` answers 403
+          # here — a display must not be able to spawn anything, and this is the leg that would
+          # catch an image built from a tree where that regressed.
+
+      - name: Container logs
+        if: always()
+        run: docker logs bot-crossing-ci || true
+
+      - name: Stop it
+        if: always()
+        run: docker rm --force bot-crossing-ci || true
+
+      - name: Export digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ steps.prep.outputs.pair }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Assemble and push the multi-arch manifest list from the per-platform digests. Tags:
+  # sha-<full 40-character sha> + latest. Push-to-main only — see the note at the top.
+  docker-merge:
+    name: docker-merge
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/bot-crossing
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Create + push manifest list
+        working-directory: /tmp/digests
+        run: |
+          # shellcheck disable=SC2046  # intentional split: -t flags + digest refs
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository_owner }}/bot-crossing@sha256:%s ' *)
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect \
+            ghcr.io/${{ github.repository_owner }}/bot-crossing:${{ steps.meta.outputs.version }}
+
+      # Deployment is a hand-written tag bump in the manifest repo, so the one thing the human
+      # doing it needs is the tag this run produced. Put it where they will look.
+      - name: Summarise the tag
+        run: |
+          {
+            echo '## Image'
+            echo
+            echo '```'
+            echo 'ghcr.io/${{ github.repository_owner }}/bot-crossing:${{ steps.meta.outputs.version }}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
