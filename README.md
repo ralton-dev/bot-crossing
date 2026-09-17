@@ -800,6 +800,79 @@ What it touches on disk, in full:
 `data/colony.json` holds the names and paths of the repos you work in, so it is gitignored —
 worth knowing before you copy one into an issue.
 
+### Display mode
+
+The other way to watch a colony you are not sitting at: put the *server* somewhere else and
+have the laptop push to it. `BOT_CROSSING_MODE=display` turns the server into a screen.
+
+A display colony **never scans and never spawns.** It has no transcripts under it to read and
+nothing it could usefully open — it is a wall display, and the machine it runs on is not the
+machine you work on. So `/api/open`, `/api/new-session` and `/api/reveal` answer `403` before
+they read a request body, and `/api/threads` serves whatever was last pushed to it instead of
+walking a disk. The page hides its own Open / New / Finder / Copy path buttons when it sees
+`"mode": "display"` in the threads response, but that is politeness; the refusal is the server's.
+
+What it reads:
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `BOT_CROSSING_MODE` | `local` | `local` or `display`. Anything else is a startup error |
+| `BOT_CROSSING_SYNC_TOKEN` | — | required in display mode; the bearer token pushes must carry |
+| `BOT_CROSSING_PUBLIC_HOST` | — | required in display mode; the hostname the colony is served on |
+| `BOT_CROSSING_STALE_AFTER_S` | `180` | how quiet a machine may go before the page says so |
+| `BOT_CROSSING_DATA` | `<repo>/data` | where `colony.json` and `snapshots/` live |
+
+The two required ones are checked at startup and the server refuses to come up without them,
+by name. A display colony that boots healthy and then 401s every push is a much worse afternoon.
+
+Threads arrive by `POST /api/sync`:
+
+```bash
+curl -X POST https://colony.example/api/sync \
+  -H 'Authorization: Bearer <BOT_CROSSING_SYNC_TOKEN>' \
+  -H 'Content-Type: application/json' \
+  -d '{ "machine": "workshop-laptop", "scannedAt": 1758123456789, "threads": [ ... ] }'
+```
+
+`machine` has to match `/^[a-z0-9][a-z0-9-]{0,62}$/`, because it becomes the filename of
+`<BOT_CROSSING_DATA>/snapshots/<machine>.json`. The reply is `{ ok: true, threads: <count>,
+machine }`; a wrong or missing token is `401`, a malformed body `400`, and in local mode there
+is no such endpoint at all (`404`). The token is compared in constant time.
+
+This one path is checked **before** the `Host` and `Origin` gate above, and it is the only one
+that is. Those two checks exist to stop a *web page* driving the server, and the pusher is not a
+web page — it sends no `Origin` and arrives with whatever `Host` the thing in front of the
+server rewrote. The token is the gate there, and a better one. Every other endpoint is gated
+exactly as before, with `BOT_CROSSING_PUBLIC_HOST` added to the set of hostnames the server
+answers to and nothing else added.
+
+More than one machine may push. The colony is the union of every snapshot, newest thread first.
+
+**What gets pushed is deliberately much less than a thread.** Kept: `id`, `title`, `project`,
+`harness`, `harnessName`, `model`, `effort`, `createdAt`, `lastActivityAt`, `lastFocusedAt`,
+`hasError`, `starred`, `prState`, `archived`, `hasTranscript`, `sizeBytes`, `source`, `unread`,
+`running`. Dropped: `preview` (the opening prompt), `cwd`, `projectPath`, `worktree`,
+`gitBranch`, `routine`, and every session id — `ref` arrives empty and `canOpen` is forced
+`false`. Dropped fields are *absent*, not blanked, so nothing has to be trusted to empty them
+later. The redaction runs on the laptop before sending, on the server as the push lands, and
+again every time the list is served: the snapshot directory is safe to serve no matter what
+wrote into it.
+
+Titles still travel. If your thread titles are sensitive, a display colony is not for you.
+
+**Going quiet is a warning, not an error.** A laptop that shut its lid still has a colony worth
+looking at, so the threads keep being served and the page gets a line saying how old they are —
+`Laptop last seen 12 min ago` — after `BOT_CROSSING_STALE_AFTER_S`. Nothing 500s and nothing
+disappears.
+
+The display keeps its own `data/colony.json`: its map layout, its hidden repos, its settings and
+its archive list are the wall's, not the laptop's, and `PUT /api/state` works there exactly as
+it does locally.
+
+#### The laptop side
+
+_(coming with the sync agent)_
+
 ## Layout
 
 ```

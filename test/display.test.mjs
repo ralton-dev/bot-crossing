@@ -1,12 +1,13 @@
 /**
- * The red pin: what `BOT_CROSSING_MODE=display` must do, written down before it exists.
+ * What `BOT_CROSSING_MODE=display` does. Written down before it existed; passing since WP-A
+ * landed display mode in `server/api.mjs` on 2026-09-17.
  *
  * A display colony is fed by a laptop instead of by the disk under it, and it must be
  * incapable of acting on anything. That is four separate promises — ingest, serve-redacted,
- * refuse-to-spawn, refuse-a-bad-token — asserted here as one test so the pin is a single
- * thing to pull out when display mode lands.
+ * refuse-to-spawn, refuse-a-bad-token — asserted in the first test as one unit, because they
+ * are one claim; the tests after it cover the union, staleness, the gate and the refusals.
  *
- * OBSERVED AGAINST 5653d84, in this order:
+ * OBSERVED AGAINST 5653d84, before any of this existed, in this order:
  *   1. POST /api/sync, right bearer, no Origin  → 403 {"error":"Bot Crossing only answers its
  *      own page on this machine"}. The Host/Origin gate refuses a POST carrying no Origin long
  *      before anything looks for a route called /api/sync, so the token is never compared and
@@ -19,9 +20,7 @@
  *      request got all the way to the harness adapter. A ref with real session ids in it would
  *      have spawned a terminal on this machine.
  *   4. POST /api/sync, wrong bearer, no Origin → 403, same body as 1. A wrong token and a
- *      right one are indistinguishable today, because neither is looked at.
- *
- * Marked `{ todo: true }` so `npm test` stays green until WP-A flips it.
+ *      right one were indistinguishable, because neither was looked at.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -147,7 +146,7 @@ const t2 = thread({
   },
 })
 
-test('a display colony takes a push, serves it redacted, and can do nothing else', { todo: true }, async () => {
+test('a display colony takes a push, serves it redacted, and can do nothing else', async () => {
   await withDisplayServer(async ({ call, dir, port }) => {
     // 1 — the push. No Origin: the bearer token is the whole gate on this path, because the
     // caller is a launchd agent on a laptop, not a browser.
@@ -157,6 +156,9 @@ test('a display colony takes a push, serves it redacted, and can do nothing else
       body: JSON.stringify({ machine: MACHINE, scannedAt: Date.now(), threads: [t1, t2] }),
     })
     assert.equal(pushed.status, 200, 'a correctly-signed push is accepted')
+    // The count is the sync agent's only receipt: it logs what the far end says it stored, not
+    // what it believes it sent, so a silently dropped thread shows up in the laptop's own log.
+    assert.deepEqual(pushed.json(), { ok: true, threads: 2, machine: MACHINE })
     await fsp.stat(path.join(dir, 'snapshots', `${MACHINE}.json`))
 
     // 2 — the wall reading it back, exactly as it arrives through an ingress: the public
@@ -191,4 +193,150 @@ test('a display colony takes a push, serves it redacted, and can do nothing else
     })
     assert.equal(forged.status, 401, 'a wrong token is turned away')
   })
+})
+
+/** A convenience for the tests below, which all start from one accepted push. */
+const push = (call, machine, threads, scannedAt = Date.now()) =>
+  call('/api/sync', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token' },
+    body: JSON.stringify({ machine, scannedAt, threads }),
+  })
+
+test('two machines make one colony, and a shared project name is not a collision', async () => {
+  await withDisplayServer(async ({ call }) => {
+    // Both machines have a repo called `bot-crossing` checked out. They share a plot, because a
+    // plot is keyed on the project name — right for one person with two laptops, and the reason
+    // a per-machine plot prefix is on the follow-up list rather than in here.
+    const other = [
+      thread({ id: 'claude-code:aaaaaaaa-1111-2222-3333-444444444444', lastActivityAt: 1758200000000 }),
+      thread({ id: 'codex:bbbbbbbb-1111-2222-3333-444444444444', project: 'unknown', lastActivityAt: 5 }),
+    ]
+    assert.equal((await push(call, MACHINE, [t1, t2])).status, 200)
+    assert.equal((await push(call, 'other-machine', other)).status, 200)
+
+    const body = (await call('/api/threads', { headers: { Host: PUBLIC_HOST } })).json()
+    assert.equal(body.threads.length, 4, 'every machine that pushes is in the colony')
+    assert.equal(body.sources.length, 2)
+    assert.deepEqual(body.sources.map((s) => s.machine).sort(), ['other-machine', MACHINE])
+    assert.deepEqual(
+      body.threads.map((t) => t.lastActivityAt),
+      [1758200000000, 1758123456789, 5, 0],
+      'newest first, across machines — the page draws them in this order'
+    )
+    assert.ok(!body.sources.some((s) => s.stale), 'a push that just landed is not stale')
+  })
+})
+
+test('a laptop that stopped pushing is a warning, not an error — the colony still draws', async () => {
+  await withDisplayServer(async ({ call, dir }) => {
+    assert.equal((await push(call, MACHINE, [t1, t2])).status, 200)
+
+    // Written straight to disk rather than waited for: the default stale window is three
+    // minutes and a test that takes three minutes is a test nobody runs.
+    const file = path.join(dir, 'snapshots', `${MACHINE}.json`)
+    const snapshot = JSON.parse(await fsp.readFile(file, 'utf8'))
+    snapshot.receivedAt = Date.now() - 12 * 60 * 1000
+    await fsp.writeFile(file, JSON.stringify(snapshot))
+
+    const res = await call('/api/threads', { headers: { Host: PUBLIC_HOST } })
+    assert.equal(res.status, 200, 'stale threads are still served')
+    const body = res.json()
+    assert.equal(body.threads.length, 2)
+    assert.equal(body.warnings.length, 1, 'one line per silent machine, and only one machine is silent')
+    assert.match(body.warnings[0], /last seen 12 min ago$/)
+    assert.equal(body.sources[0].stale, true)
+  })
+})
+
+test('the public hostname is the only new one — evil.example is still refused', async () => {
+  await withDisplayServer(async ({ call }) => {
+    // Display mode widens the host set by exactly one name. A rebinding attack against the wall
+    // is the same attack it always was, and gets the same answer even on a plain GET.
+    const res = await call('/api/threads', { headers: { Host: 'evil.example' } })
+    assert.equal(res.status, 403)
+  })
+})
+
+test('the wall still saves its own colony — layout and archives are the display\'s own (decision 8)', async () => {
+  await withDisplayServer(async ({ call }) => {
+    const res = await call('/api/state', {
+      method: 'PUT',
+      headers: { Host: PUBLIC_HOST, Origin: `https://${PUBLIC_HOST}` },
+      body: JSON.stringify({ archived: ['claude-code:11111111-2222-3333-4444-555555555555'] }),
+    })
+    assert.equal(res.status, 200, 'a page served from the public host may write state')
+    assert.equal(res.json().archived.length, 1)
+
+    const read = await call('/api/state', { headers: { Host: PUBLIC_HOST } })
+    assert.deepEqual(read.json().archived, ['claude-code:11111111-2222-3333-4444-555555555555'])
+  })
+})
+
+test('none of the three spawn endpoints will even read a body', async () => {
+  await withDisplayServer(async ({ call, port }) => {
+    for (const p of ['/api/open', '/api/new-session', '/api/reveal']) {
+      const res = await call(p, {
+        method: 'POST',
+        headers: { Origin: `http://localhost:${port}` },
+        body: JSON.stringify({ harness: 'claude-code', folder: '/' }),
+      })
+      assert.equal(res.status, 403, `${p} spawned something`)
+      assert.deepEqual(res.json(), { ok: false, error: 'This colony is a display; it cannot open anything' })
+    }
+  })
+})
+
+test('a machine name that is a path is refused, and nothing lands on disk', async () => {
+  await withDisplayServer(async ({ call, dir }) => {
+    // The name becomes a filename. `../etc` must not be escaped into something safe — it must
+    // be turned away, so a push whose name is wrong is a loud 400 in the laptop's log.
+    const res = await push(call, '../etc', [t1])
+    assert.equal(res.status, 400)
+    assert.equal(res.json().ok, false)
+    assert.deepEqual(await fsp.readdir(path.join(dir, 'snapshots')).catch(() => []), [])
+    assert.equal(await fsp.stat(path.join(dir, '..', 'etc.json')).then(() => true, () => false), false)
+  })
+})
+
+/**
+ * The regression the whole package is arranged around: with no environment set, this is the
+ * server it has always been. Its own `withServer` because the mode variables have to be *unset*
+ * before the import, which is the opposite of everything above.
+ */
+test('local mode is untouched: no /api/sync, and it says so in the threads body', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bot-crossing-local-'))
+  const before = Object.fromEntries(MODE_VARS.map((k) => [k, process.env[k]]))
+  process.env.BOT_CROSSING_DATA = dir
+  for (const k of ['BOT_CROSSING_MODE', 'BOT_CROSSING_SYNC_TOKEN', 'BOT_CROSSING_PUBLIC_HOST']) delete process.env[k]
+  const { apiMiddleware } = await import(`../server/api.mjs?local-${dir}`)
+  const server = http.createServer((req, res) => apiMiddleware(req, res, null))
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const call = (p, opts) =>
+    fetch(`http://127.0.0.1:${port}${p}`, {
+      headers: { Origin: `http://localhost:${port}`, 'Content-Type': 'application/json' },
+      ...opts,
+    })
+
+  try {
+    const synced = await call('/api/sync', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', Origin: `http://localhost:${port}` },
+      body: JSON.stringify({ machine: MACHINE, scannedAt: 1, threads: [] }),
+    })
+    assert.equal(synced.status, 404, 'a local colony has no push endpoint to find')
+
+    const body = await (await call('/api/threads')).json()
+    assert.equal(body.mode, 'local')
+    assert.deepEqual(body.sources, [], 'nothing fed this colony — it read its own disk')
+    assert.ok(Array.isArray(body.threads), 'and it still scanned')
+  } finally {
+    server.close()
+    for (const k of MODE_VARS) {
+      if (before[k] === undefined) delete process.env[k]
+      else process.env[k] = before[k]
+    }
+    await fsp.rm(dir, { recursive: true, force: true })
+  }
 })

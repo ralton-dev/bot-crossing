@@ -84,6 +84,30 @@ Optional `diagnostic()` on an adapter returns a sentence, or `''`. Without it th
 is a harness that reports `detected: true`, throws inside `scanThreads` on every poll, and looks
 perfectly healthy in the HUD while contributing nothing.
 
+## Display mode never spawns and never scans
+
+`BOT_CROSSING_MODE=display` is a colony on a screen somewhere else — a wall display fed
+snapshots by the laptop that owns the threads. It has no transcripts under it and no business
+opening anything, so `/api/open`, `/api/new-session` and `/api/reveal` answer `403` before they
+read a request body, and `/api/threads` serves the last push instead of walking a disk. One
+variable decides, once, at startup: there is no per-endpoint flag, so "can this spawn?" has
+exactly one answer to read.
+
+Refusing in the server rather than hiding the buttons in the page is the point. The page is
+glass — anyone who can reach the colony can `curl` it — and a wall display is reachable by
+more people than a localhost toy. Hiding a control that still works is not a security property.
+
+`POST /api/sync` is checked *before* the `Host`/`Origin` gate, the only path that is. That gate
+stops a web page driving the server; the pusher is not a web page. It sends no `Origin`, and it
+arrives with whatever `Host` the ingress in front of the server rewrote. A bearer token compared
+in constant time is the gate there, and a stronger one than either header. Everything else is
+gated exactly as before, with the public hostname added to the set and nothing else.
+
+Snapshots are redacted by an allow-list in `server/lib/redact.mjs` — on the laptop before
+sending, on the server as the push lands, and again on every read. Prompts, working directories,
+branch names and session ids never leave the machine that owns them, and a harness adapter that
+grows a new field gets it dropped by default rather than shipped by accident.
+
 ## Pull requests are treated as feature requests
 
 Contributions are read closely and their intent is usually implemented directly, rather than

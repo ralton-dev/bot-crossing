@@ -2,6 +2,7 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { timingSafeEqual } from 'node:crypto'
 import { openInTerminal as openInLinuxTerminal, schemeHasHandler, schemeOf } from './lib/xdg.mjs'
 import { openInTerminal as openInMacTerminal, openUrl as openMacUrl } from './lib/macos.mjs'
 import {
@@ -11,7 +12,38 @@ import {
   openThread as harnessOpenThread,
   scanThreads,
 } from './scan.mjs'
-import { readState, reconcileArchived, serialise, writeState } from './lib/colony-state.mjs'
+import { dataDir, readState, reconcileArchived, serialise, writeState } from './lib/colony-state.mjs'
+import { readSnapshots, writeSnapshot } from './lib/snapshots.mjs'
+
+/**
+ * Two colonies, one server.
+ *
+ * `local` is everything this has ever been: it scans the disk under it and it can open things.
+ * `display` is a screen on a wall somewhere else — it is fed snapshots by the machine that owns
+ * the threads, it never scans, and it cannot act on anything (decision 9). There is no third
+ * mode and no per-endpoint override: one variable decides, once, at startup, so that "can this
+ * spawn?" has exactly one answer to read.
+ */
+const MODE = process.env.BOT_CROSSING_MODE || 'local'
+if (MODE !== 'local' && MODE !== 'display') {
+  throw new Error(`BOT_CROSSING_MODE must be 'local' or 'display', not '${MODE}'`)
+}
+const DISPLAY = MODE === 'display'
+
+const SYNC_TOKEN = process.env.BOT_CROSSING_SYNC_TOKEN || ''
+const PUBLIC_HOST = process.env.BOT_CROSSING_PUBLIC_HOST || ''
+const STALE_AFTER_MS = (Number(process.env.BOT_CROSSING_STALE_AFTER_S) || 180) * 1000
+
+/**
+ * Fail at import, by name. A display colony missing its token would otherwise come up healthy,
+ * serve an empty map, and refuse every push with a 401 that looks like a rotated secret — hours
+ * of looking in the wrong place. Missing the public host is the same story with a 403.
+ */
+if (DISPLAY) {
+  const missing = [!SYNC_TOKEN && 'BOT_CROSSING_SYNC_TOKEN', !PUBLIC_HOST && 'BOT_CROSSING_PUBLIC_HOST']
+    .filter(Boolean)
+  if (missing.length) throw new Error(`BOT_CROSSING_MODE=display requires ${missing.join(' and ')}`)
+}
 
 /**
  * Hand a `harness://…` deep link, or a folder, to whatever opens things on this OS. The
@@ -153,6 +185,15 @@ function hostnameOf(value) {
 }
 
 /**
+ * In display mode the colony is *meant* to be reached from elsewhere, so its own public
+ * hostname joins the local set — and nothing else does. The gate below is unchanged in shape:
+ * a request still has to name a host this server answers to, and still has to come from a page
+ * on that host if it claims an origin at all.
+ */
+const ALLOWED_HOSTS = new Set(LOCAL_HOSTS)
+if (DISPLAY) ALLOWED_HOSTS.add(hostnameOf(PUBLIC_HOST))
+
+/**
  * Only a page this server itself served may drive it. Two checks, against two different
  * attacks, both of which a localhost server with an `open`-the-desktop-app button is a
  * genuinely attractive target for:
@@ -169,12 +210,25 @@ function hostnameOf(value) {
  * POST/PUT, so its absence means the caller is not the page. That does mean a bare `curl`
  * POST is rejected; pass `-H 'Origin: http://localhost:5274'` if you are scripting this.
  */
-function isLocalRequest(req) {
-  if (!LOCAL_HOSTS.has(hostnameOf(req.headers.host))) return false
+function isAllowedRequest(req) {
+  if (!ALLOWED_HOSTS.has(hostnameOf(req.headers.host))) return false
 
   const origin = req.headers.origin
-  if (origin && origin !== 'null') return LOCAL_HOSTS.has(hostnameOf(origin))
+  if (origin && origin !== 'null') return ALLOWED_HOSTS.has(hostnameOf(origin))
   return req.method === 'GET' || req.method === 'HEAD'
+}
+
+/**
+ * The push token, compared in constant time so a wrong guess tells an attacker nothing about
+ * how close it was. A length mismatch cannot go through `timingSafeEqual` at all — it throws —
+ * so it is answered `false` here; that leaks the token's length and nothing else, which is
+ * already public in the sense that it is 32 bytes hex by construction.
+ */
+function tokenAccepted(header) {
+  const offered = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : ''
+  const a = Buffer.from(offered)
+  const b = Buffer.from(SYNC_TOKEN)
+  return a.length === b.length && timingSafeEqual(a, b)
 }
 
 function readJsonBody(req, limit = 4 * 1024 * 1024) {
@@ -201,25 +255,78 @@ function readJsonBody(req, limit = 4 * 1024 * 1024) {
   })
 }
 
+/** Every path that can reach `launch()` or a terminal. Display mode refuses all three. */
+const SPAWN_PATHS = new Set(['/api/open', '/api/new-session', '/api/reveal'])
+
 /** Connect-style middleware: handles /api/*, passes everything else through. */
 export async function apiMiddleware(req, res, next) {
   const url = new URL(req.url, 'http://localhost')
   if (!url.pathname.startsWith('/api/')) return next ? next() : send(res, 404, { error: 'Not found' })
 
-  if (!isLocalRequest(req)) {
+  /**
+   * Checked *before* the Host/Origin gate, deliberately. That gate exists to stop a web page
+   * driving the server, and the pusher is not a web page: it is an agent on a laptop that sends
+   * no `Origin` at all and arrives with whatever `Host` the ingress in front of us rewrote. The
+   * bearer token is the gate on this one path, and it is a stronger one than either header.
+   */
+  if (url.pathname === '/api/sync' && req.method === 'POST') {
+    if (!DISPLAY) return send(res, 404, { error: 'Unknown endpoint' })
+    if (!tokenAccepted(req.headers.authorization)) return send(res, 401, { error: 'Bad token' })
+    try {
+      // 8 MB: a laptop with five hundred threads pushes well under one, and a body that large
+      // is a bug or an attack either way.
+      const body = await readJsonBody(req, 8 * 1024 * 1024)
+      const stored = await writeSnapshot(dataDir(), body && body.machine, body)
+      if (!stored.ok) return send(res, 400, { ok: false, error: stored.error })
+      return send(res, 200, { ok: true, threads: stored.threads, machine: stored.machine })
+    } catch (err) {
+      return send(res, 400, { ok: false, error: String(err && err.message ? err.message : err) })
+    }
+  }
+
+  if (!isAllowedRequest(req)) {
     return send(res, 403, { error: 'Bot Crossing only answers its own page on this machine' })
+  }
+
+  /**
+   * Before the body is read, before anything is dispatched. A display colony refusing to open
+   * things is not a UI decision the page cooperates with — the page is just glass, and anyone
+   * can curl this. The three endpoints below are the only ones that reach `spawn`.
+   */
+  if (DISPLAY && SPAWN_PATHS.has(url.pathname)) {
+    return send(res, 403, { ok: false, error: 'This colony is a display; it cannot open anything' })
   }
 
   try {
     if (url.pathname === '/api/threads' && req.method === 'GET') {
+      if (DISPLAY) {
+        const { threads, sources, warnings } = await readSnapshots(dataDir(), STALE_AFTER_MS)
+        // The wall's own archive list still counts (decision 8). Mostly a no-op — the laptop
+        // reconciled before pushing — but the wall is allowed to retire a thread by itself.
+        const reconciled = await reconcileArchived(threads)
+        const newest = sources.reduce((at, s) => Math.max(at, s.scannedAt), 0)
+        // `scannedAt` is the laptop's clock, not ours: the page shows how old the colony is,
+        // and "now" would be a lie told every poll. Nothing pushed yet is honestly now.
+        return send(res, 200, {
+          threads: reconciled,
+          scannedAt: newest || Date.now(),
+          warnings,
+          mode: 'display',
+          sources,
+        })
+      }
       const threads = await reconcileArchived(await scanThreads())
       // A harness that is present but cannot read its own store says so here, rather than
       // appearing healthy in the list while quietly contributing nothing.
       const warnings = (await harnessStatus()).filter((h) => h.detected && h.error).map((h) => h.error)
-      return send(res, 200, { threads, scannedAt: Date.now(), warnings })
+      return send(res, 200, { threads, scannedAt: Date.now(), warnings, mode: 'local', sources: [] })
     }
 
     if (url.pathname === '/api/harnesses' && req.method === 'GET') {
+      // `harnessStatus()` walks `$HOME` looking for session stores. On a display there is no
+      // such home and no such harness, and every answer it could give would be a complaint
+      // about a machine nobody is sitting at.
+      if (DISPLAY) return send(res, 200, { harnesses: [] })
       return send(res, 200, { harnesses: await harnessStatus() })
     }
 

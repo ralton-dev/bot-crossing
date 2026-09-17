@@ -6,6 +6,9 @@ dist
 data/*.json
 data/*.tmp
 
+# Pushed snapshots on a display colony — somebody else's thread titles and project names.
+data/snapshots/
+
 # Per-machine Claude Code permissions — personal paths live in here.
 .claude/settings.local.json
 
