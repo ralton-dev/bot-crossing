@@ -330,6 +330,7 @@ const hud = new Hud(app, settings, actions)
 // plus the thread card, which that gesture deliberately spares and a wall has no use for.
 if (kiosk) {
   rig.enabled = false
+  rig.zoomOut()
   rig.setOrbit(true)
   hud.setKiosk(true)
   hud.toggleUi(false)

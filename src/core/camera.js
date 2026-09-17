@@ -350,6 +350,16 @@ export class CameraRig {
     if (this._zoom && !this.groundPoint(this._zoom.sx, this._zoom.sy, this._zoom.world)) this._zoom = null
   }
 
+  /**
+   * All the way out. A wall display wants the whole colony in frame from the first second,
+   * not the 62-unit working distance a person zooms around from, and it has no wheel to get
+   * there itself. Both fields are set so there is no glide from the default on first paint.
+   */
+  zoomOut() {
+    this.desiredDistance = MAX_DIST
+    this.distance = MAX_DIST
+  }
+
   resetView() {
     this.orbiting = false
     this.desiredTarget.set(0, 0, 0)
